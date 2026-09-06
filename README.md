@@ -4,8 +4,9 @@ A private journaling app where your past entries become searchable memory. You w
 
 Built for the Google Cloud Gen AI Academy APAC — Cloud Run Build & Deploy Social Challenge.
 
-**Live deployment:** `<CLOUD_RUN_URL>`
+**Live deployment:** https://smriti-143318167036.asia-southeast1.run.app
 **Cloud Run label:** `dev-tutorial=cloud-run-ai-challenge`
+**Region:** `asia-southeast1`
 
 ---
 
@@ -26,7 +27,7 @@ That single feature is also what makes the security story concrete. Embeddings a
 | User authentication | Firebase Auth with Google Sign-In; server-side ID token verification on every `/api/*` route | `src/lib/firebase.ts`, `server.ts` → `requireFirebaseAuth` |
 | Multi-turn AI interaction | Gemini via a 4-model fallback ladder; three reflection modes | `server.ts` → `generateContentWithFallback`, `POST /api/reflect` |
 | Isolated data storage | Firestore under `/users/{uid}/…` with owner-bound rules and no admin bypass | `firestore.rules` |
-| Secure key management | `GEMINI_API_KEY` bound from Secret Manager to the Cloud Run runtime; never in client code | `server.ts` → `getGeminiClient`, deploy command below |
+| Secure key management | `GEMINI_API_KEY` bound from Secret Manager to the Cloud Run runtime; never in client code | `server.ts` → `getGeminiClient`, deploy commands below |
 
 ---
 
@@ -45,6 +46,16 @@ That single feature is also what makes the security story concrete. Embeddings a
 7. If nothing clears the threshold, return an honest no-match. Generation is never invoked.
 
 The UI shows the similarity score on every source card. That is deliberate — it makes retrieval legible instead of magical.
+
+### Reflection Dashboard — personal synthesis and client-side follow-ups
+
+`POST /api/dashboard/summary` in `server.ts`:
+
+1. **Isolation.** Reads `/users/{uid}/interactions` where `uid` comes strictly from the verified Firebase ID token. The user ID is structural to the document path.
+2. **Flagged-entry exclusion.** Interactions marked `flagged === true` are filtered out before any statistics or AI context assembly. They never enter the prompt corpus.
+3. **Local metrics and AI synthesis.** Computes total entries, 7- and 30-day counts, current writing streak, mode distribution, and a 14-day activity sparkline. Up to 30 recent entries go to Gemini inside untrusted-content delimiters under a JSON response schema, producing a second-person narrative, recurring themes, an emotional trajectory, and inferred follow-ups. If Gemini is unreachable, the route returns local metrics with `aiAvailable: false` rather than failing.
+4. **Theme-to-question.** Clicking a generated theme runs it as a grounded query through the existing `/api/ask` route.
+5. **Zero-OAuth export.** Action items export two ways, both entirely client-side: an RFC-5545 `.ics` file generated as an in-browser Blob (imports into Google Calendar, Apple Calendar, Outlook), and a URL-encoded `mailto:` link. Neither requests Google Calendar, Gmail, or any Workspace OAuth scope, and neither makes a third-party network call.
 
 ### Prompt injection defense with a persistent audit trail
 
@@ -65,19 +76,6 @@ When an entry trips detection:
 Roles come from Firebase custom claims, verified server-side from the decoded token. Client-side role state is cosmetic; every admin route re-verifies.
 
 The design decision worth stating plainly: **an administrator has no read path to any user's journal content.** This is enforced in `firestore.rules`, not just in application code — the rules for `interactions` and `embeddings` contain no admin branch at all. Aggregates are computed with collection-group `.count()` and a `.select('mode')` projection, so entry bodies are never loaded into server memory.
-
-### Reflection Dashboard — personal synthesis and client-side follow-ups
-
-`POST /api/dashboard/summary` in `server.ts`:
-
-1. **Isolation guarantee**: Reads `/users/{uid}/interactions` where `uid` is extracted strictly from the verified Firebase ID token (`req.user.uid`). The user ID is structural to the document path, ensuring complete tenant isolation with no possibility of cross-user data leakage.
-2. **Flagged-entry exclusion**: Interactions marked with `flagged === true` (tripped prompt injection defenses) are explicitly filtered out prior to statistical computation or AI context assembly. They never enter the prompt corpus.
-3. **Local metrics & AI synthesis**: Computes total reflection counts, 7-day and 30-day velocity, current consecutive-day writing streaks, mode distributions, and an inline 14-day activity sparkline. When entries exist, up to 30 recent reflections are passed to Gemini inside untrusted-content delimiters with strict JSON schema enforcement to synthesize an empathetic second-person narrative, recurring theme tags, emotional trajectory, and actionable follow-ups. If Gemini is unreachable or offline, the route gracefully falls back to returning all local metrics with `aiAvailable: false`.
-4. **Theme-to-Ask Q&A**: Clicking any generated theme tag directly transitions the user to "Ask Past Self" and executes a grounded semantic search over past reflections.
-5. **Zero-OAuth client-side export**: Inferred action items provide two export mechanisms:
-   - *Add to Calendar*: Generates an RFC-5545 compliant `.ics` iCalendar file dynamically as an in-memory `Blob` in the browser, instantly downloadable and importable into Google Calendar, Apple Calendar, or Outlook.
-   - *Email this*: Generates a pre-filled, URL-encoded `mailto:` URI for native email clients.
-   - **Explicit OAuth Scope Note**: Both export features execute entirely client-side without requesting Google Calendar, Gmail, or any Workspace OAuth scopes, requiring zero third-party tokens or external network calls.
 
 ---
 
@@ -169,16 +167,28 @@ Deploy: `firebase deploy --only firestore:rules`
 ## Setup and deployment
 
 ### Prerequisites
+
 Node 20+, `gcloud` CLI, `firebase` CLI, a Firebase project with Auth (Google provider) and Firestore enabled.
 
 ### Local
 
 ```bash
-git clone <REPO_URL> && cd <REPO_DIR>
+git clone https://github.com/pradipchavda29/smriti-journal.git
+cd smriti-journal
 npm install
 cp .env.example .env     # add GEMINI_API_KEY from Google AI Studio
 npm run dev              # http://localhost:3000
 ```
+
+### Enable required APIs
+
+```bash
+gcloud services enable secretmanager.googleapis.com
+gcloud services enable run.googleapis.com
+gcloud services enable firestore.googleapis.com
+```
+
+Secret Manager is not enabled by default on a new project. Skipping this produces a `SERVICE_DISABLED` error on the next step.
 
 ### Secret Manager
 
@@ -187,16 +197,35 @@ echo -n "YOUR_GEMINI_API_KEY" | \
   gcloud secrets create GEMINI_API_KEY --data-file=-
 
 gcloud secrets add-iam-policy-binding GEMINI_API_KEY \
-  --member="serviceAccount:<PROJECT_NUMBER>-compute@developer.gserviceaccount.com" \
+  --member="serviceAccount:143318167036-compute@developer.gserviceaccount.com" \
   --role="roles/secretmanager.secretAccessor"
 ```
+
+Substitute your own project number and runtime service account. Find it with:
+
+```bash
+gcloud run services describe smriti --region asia-southeast1 \
+  --format="value(spec.template.spec.serviceAccountName)"
+```
+
+### Firestore access for the runtime service account
+
+The Admin SDK reads Firestore using Application Default Credentials. The Cloud Run service account needs:
+
+```bash
+gcloud projects add-iam-policy-binding <PROJECT_ID> \
+  --member="serviceAccount:143318167036-compute@developer.gserviceaccount.com" \
+  --role="roles/datastore.user"
+```
+
+Without this, `getUserEmbeddings` returns `PERMISSION_DENIED` and retrieval silently reports an empty history.
 
 ### Deploy
 
 ```bash
 gcloud run deploy smriti \
   --source . \
-  --region <REGION> \
+  --region asia-southeast1 \
   --allow-unauthenticated \
   --set-secrets GEMINI_API_KEY=GEMINI_API_KEY:latest \
   --labels dev-tutorial=cloud-run-ai-challenge
@@ -204,11 +233,29 @@ gcloud run deploy smriti \
 
 `--allow-unauthenticated` applies to Cloud Run's network layer only. Application-level access is enforced by `requireFirebaseAuth`; unauthenticated API calls receive 401 before any work is done.
 
-Verify the label:
+### Verify the deployment
 
 ```bash
-gcloud run services describe smriti --region <REGION> \
+# Label present
+gcloud run services describe smriti --region asia-southeast1 \
   --format="value(metadata.labels)"
+
+# Key bound as a secret reference, not a plaintext value
+gcloud run services describe smriti --region asia-southeast1 \
+  --format="yaml(spec.template.spec.containers[0].env)"
+
+# Auth boundary enforced
+curl -i -X POST https://smriti-143318167036.asia-southeast1.run.app/api/reflect \
+  -H "Content-Type: application/json" -d '{"prompt":"hi"}'
+# → HTTP/2 401  {"code":"AUTH_TOKEN_MISSING"}
+```
+
+The env output must show `secretKeyRef`. If it shows a literal `value:`, re-apply:
+
+```bash
+gcloud run services update smriti --region asia-southeast1 \
+  --remove-env-vars GEMINI_API_KEY \
+  --update-secrets GEMINI_API_KEY=GEMINI_API_KEY:latest
 ```
 
 ### Configuration
@@ -245,6 +292,7 @@ Sign out and back in afterward. Custom claims do not appear in an already-issued
 | Privilege | Role escalation via client state | Custom claims verified server-side; `?role=admin` and body role fields rejected with 403 |
 | Admin access | Elevated role used to read private journals | No admin branch in the `interactions` or `embeddings` rules; aggregates use counts and metadata projections only |
 | Audit integrity | Client tampering with security records | `security_events` denied to all clients; Admin SDK writes; reads only via an authenticated route scoped to the caller |
+| Third-party scope creep | Calendar and email export requesting broad Workspace access | Export is client-side `.ics` and `mailto:` only. No OAuth scopes beyond sign-in, no third-party tokens |
 | Secrets | Key exposure in the browser bundle | All Gemini calls server-side; key injected at runtime from Secret Manager |
 
 ---
@@ -257,13 +305,15 @@ Recorded honestly rather than papered over.
 - **Admin `totalUsers` may under-count.** Entries live at `/users/{uid}/interactions/…`. If no document was ever written at `/users/{uid}` itself, those are phantom parent documents that `.count()` does not see.
 - **Injection detection is pattern-based.** A regex category list catches common overrides but is not exhaustive. It is one layer; the delimiters, the system mandate, and corpus exclusion are the others.
 - **Embeddings are written from the client** using a payload generated server-side, so the embeddings rule must permit owner writes. Moving the write server-side would allow locking it to Admin-SDK-only.
+- **`logSecurityEvent` has no REST fallback.** Unlike `getUserEmbeddings`, audit writes go through the Admin SDK only. In an environment without Application Default Credentials, they fail silently inside their try/catch by design — a logging failure must never break a user's request.
+- **Calendar export is a file download, not an API integration.** The `.ics` opens in the user's calendar app rather than writing directly to Google Calendar. This was a deliberate trade: it avoids requesting Workspace OAuth scopes for a single feature.
 - **A project ID fallback is hardcoded** in `server.ts`. Harmless — project IDs are not secrets — but change it when forking.
 
 ---
 
 ## Verification
 
-See `TESTING.md` for the full test plan. Priority-zero tests cover the authentication boundary, cross-user isolation with two separate Google accounts, secret containment in the client bundle, and the Cloud Run label.
+See [`TESTING.md`](./TESTING.md) for the full test plan and recorded results. Priority-zero tests cover the authentication boundary, cross-user isolation with two separate Google accounts, secret containment in the client bundle, and the Cloud Run label.
 
 ---
 
