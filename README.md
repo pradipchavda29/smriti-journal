@@ -313,8 +313,24 @@ Recorded honestly rather than papered over.
 
 ## Verification
 
-See [`TESTING.md`](./TESTING.md) for the full test plan and recorded results. Priority-zero tests cover the authentication boundary, cross-user isolation with two separate Google accounts, secret containment in the client bundle, and the Cloud Run label.
+Verified manually against the live deployment:
 
+- **Auth boundary** — `POST /api/reflect` without an Authorization header returns
+  `HTTP/2 401` with `AUTH_TOKEN_MISSING`, rejected by Express middleware before
+  any Gemini call.
+- **Cross-user isolation** — two separate Google accounts; a query from one
+  account returns no match against the other's entries.
+- **Secret containment** — no Gemini key in the client bundle; all model calls
+  are same-origin to `/api/*`. `GEMINI_API_KEY` is bound as a `secretKeyRef`
+  on the Cloud Run service, not a plaintext env var.
+- **Grounding** — questions with no matching history return an explicit
+  no-match rather than an answer from general knowledge.
+- **Injection handling** — an entry containing an instruction-override pattern
+  saves, is marked `flagged: true`, is excluded from the retrieval corpus, and
+  produces a `security_events` audit record.
+- **Cloud Run label** — `dev-tutorial=cloud-run-ai-challenge` confirmed via
+  `gcloud run services describe`.
+  
 ---
 
 ## Tech stack
