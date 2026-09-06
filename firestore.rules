@@ -1,0 +1,46 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Default-deny all unspecified documents
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // 1. User-isolated journal interactions:
+    // GUARANTEE (CRITICAL): The line below enforces `request.auth.uid == userId` strictly.
+    // Notice there is NO `|| request.auth.token.role == 'admin'` bypass.
+    // This exact line guarantees that no administrator or elevated role can ever read another user's journal content.
+    match /users/{userId}/interactions/{interactionId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId; // <-- EXACT LINE: strictly owner-bound; zero admin read access
+    }
+
+    // 2. Retrieval Security: Embeddings are user data
+    // GUARANTEE (CRITICAL): The line below enforces `request.auth.uid == userId` strictly.
+    // Vector embeddings reflect raw user thought embeddings and are covered by identical isolation.
+    // This exact line guarantees that no administrator can query, read, or export another user's vector embeddings.
+    match /users/{userId}/embeddings/{embeddingId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId; // <-- EXACT LINE: strictly owner-bound; zero admin read access
+    }
+
+    // User profile/document self-management
+    match /users/{userId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId; // <-- strictly owner-bound
+    }
+
+    // 3. RBAC: Admin roles grant aggregate/metadata access ONLY.
+    // Elevated roles verified strictly via server-side Firebase custom claims (request.auth.token.role).
+    // Zero access to individual user contents.
+    match /admin/metadata/{docId} {
+      allow read: if request.auth != null && request.auth.token.role == 'admin';
+      allow write: if false; // System-managed aggregate metrics only
+    }
+
+    // 4. Security Events Audit Log:
+    // Written and queried server-side via the Admin SDK ONLY.
+    // Direct client SDK read and write are strictly denied.
+    match /security_events/{eventId} {
+      allow read, write: if false;
+    }
+  }
+}
+

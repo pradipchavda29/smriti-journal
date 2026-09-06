@@ -1,0 +1,6 @@
+{
+  "name": "Smriti",
+  "description": "A journal that remembers. A private journal where past entries become searchable memory, letting you ask your own history questions grounded only in what you actually wrote.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
